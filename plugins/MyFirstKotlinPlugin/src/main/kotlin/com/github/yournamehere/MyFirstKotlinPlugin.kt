@@ -35,7 +35,7 @@ class MyFirstKotlinPlugin : Plugin() {
             )
         }
 
-        // /add-friend command for new Discord username system
+        // /add-friend command for new Discord username system (stealth, no Aliucord utils)
         commands.registerCommand(
             "add-friend",
             "Send a friend request by username (new Discord system)",
@@ -47,29 +47,53 @@ class MyFirstKotlinPlugin : Plugin() {
                 ),
             ),
         ) { ctx ->
+            val prefs = settings
             val username = ctx.getString("username")?.trim()
             if (username.isNullOrEmpty()) {
                 return@registerCommand CommandsAPI.CommandResult("Please provide a username.")
             }
 
-            // Step 1: Resolve username to user ID using Discord API
-            // This endpoint is not public, but Discord client uses /users/search
-            val searchUrl = "https://discord.com/api/v9/users/search"
-            val headers = mutableMapOf<String, String>()
-            val token = com.aliucord.utils.DiskUtils.readToken() ?: ""
-            headers["Authorization"] = token
-            headers["User-Agent"] = "Discord-Android/200000" // Use a real Discord UA
-            headers["X-Discord-Locale"] = "en-US"
-            headers["X-Super-Properties"] = com.aliucord.utils.SuperProperties.get()
-            headers["Content-Type"] = "application/json"
+            // Get or prompt for token
+            var token = prefs.getString("addfriend_token", null)
+            if (token.isNullOrEmpty()) {
+                return@registerCommand CommandsAPI.CommandResult(
+                    "Paste your Discord token using: /set addfriend_token <token> and try again."
+                )
+            }
 
-            val searchPayload = "{" + "\"username\":\"$username\"}" // {"username":"..."}
-            val searchResp = com.aliucord.utils.Http.simpleRequest(
-                searchUrl,
-                searchPayload,
-                headers,
-                "POST"
+            // Stealth headers
+            val headers = mapOf(
+                "Authorization" to token,
+                "User-Agent" to "Discord-Android/200000", // Real Discord Android UA
+                "X-Discord-Locale" to "en-US",
+                // X-Super-Properties is required for stealth, but must be copied from a real client
+                // You can sniff this from your device or use a static value from a real session
+                "X-Super-Properties" to "eyJv...snip...", // <-- Replace with a real value for best stealth
+                "Content-Type" to "application/json"
             )
+
+            fun httpRequest(url: String, payload: String?, method: String, headers: Map<String, String>): String {
+                try {
+                    val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = method
+                    for ((k, v) in headers) conn.setRequestProperty(k, v)
+                    conn.doInput = true
+                    if (payload != null) {
+                        conn.doOutput = true
+                        conn.outputStream.use { it.write(payload.toByteArray()) }
+                    }
+                    val code = conn.responseCode
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    return stream.bufferedReader().readText()
+                } catch (e: Exception) {
+                    return "error: ${e.message}"
+                }
+            }
+
+            // Step 1: Resolve username to user ID
+            val searchUrl = "https://discord.com/api/v9/users/search"
+            val searchPayload = "{\"username\":\"$username\"}"
+            val searchResp = httpRequest(searchUrl, searchPayload, "POST", headers)
             val userId = try {
                 val arr = org.json.JSONArray(searchResp)
                 if (arr.length() == 0) null else arr.getJSONObject(0).getString("id")
@@ -77,17 +101,12 @@ class MyFirstKotlinPlugin : Plugin() {
                 null
             }
             if (userId == null) {
-                return@registerCommand CommandsAPI.CommandResult("User not found or Discord search failed.")
+                return@registerCommand CommandsAPI.CommandResult("User not found or Discord search failed.\nRaw: $searchResp")
             }
 
             // Step 2: Send friend request
             val friendUrl = "https://discord.com/api/v9/users/@me/relationships/$userId"
-            val friendResp = com.aliucord.utils.Http.simpleRequest(
-                friendUrl,
-                "{}",
-                headers,
-                "PUT"
-            )
+            val friendResp = httpRequest(friendUrl, "{}", "PUT", headers)
             if (friendResp.contains("You are being rate limited") || friendResp.contains("error")) {
                 return@registerCommand CommandsAPI.CommandResult("Failed to send friend request: $friendResp")
             }
