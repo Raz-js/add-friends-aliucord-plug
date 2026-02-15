@@ -43,7 +43,8 @@ class MyFirstKotlinPlugin : Plugin() {
             settings.setString("addfriend_token", token)
             CommandsAPI.CommandResult("Token saved. You can now use /add-friend.")
         }
-    override fun start(context: Context) {
+
+        // Continue plugin startup
         // Register a command with the name hello and description "My first command!" and no arguments.
         // Learn more: https://github.com/Aliucord/documentation/blob/main/plugin-dev/2_commands.md
         commands.registerCommand("hello", "My first command!") {
