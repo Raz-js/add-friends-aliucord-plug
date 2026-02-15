@@ -18,11 +18,15 @@ import com.discord.widgets.chat.list.entries.MessageEntry
 // Aliucord Plugin annotation. Must be present on the main class of your plugin
 // Plugin class. Must extend Plugin and override start and stop
 // Learn more: https://github.com/Aliucord/documentation/blob/main/plugin-dev/1_introduction.md#basic-plugin-structure
+/**
+ * Plugin Name: Modern Friend System
+ * Author: Raz (Instagram: yaboyraz)
+ */
 @AliucordPlugin(
     requiresRestart = false, // Whether your plugin requires a restart after being installed/updated
 )
 @Suppress("unused")
-class MyFirstKotlinPlugin : Plugin() {
+class ModernFriendSystemPlugin : Plugin() {
     override fun start(context: Context) {
         // Command to set Discord token for /add-friend
         commands.registerCommand(
@@ -125,27 +129,17 @@ class MyFirstKotlinPlugin : Plugin() {
                 }
             }
 
-            // Step 1: Resolve username to user ID
-            val searchUrl = "https://discord.com/api/v9/users/search"
-            val searchPayload = "{\"username\":\"$username\"}"
-            val searchResp = httpRequest(searchUrl, searchPayload, "POST", headers)
-            val userId = try {
-                val arr = org.json.JSONArray(searchResp)
-                if (arr.length() == 0) null else arr.getJSONObject(0).getString("id")
-            } catch (e: Exception) {
-                null
-            }
-            if (userId == null) {
-                return@registerCommand CommandsAPI.CommandResult("User not found or Discord search failed.\nRaw: $searchResp")
-            }
-
-            // Step 2: Send friend request
-            val friendUrl = "https://discord.com/api/v9/users/@me/relationships/$userId"
-            val friendResp = httpRequest(friendUrl, "{}", "PUT", headers)
+            // Send friend request using new Discord username system
+            val friendUrl = "https://discord.com/api/v9/users/@me/relationships"
+            val friendPayload = "{"username":"$username"}"
+            val friendResp = httpRequest(friendUrl, friendPayload, "POST", headers)
             if (friendResp.contains("You are being rate limited") || friendResp.contains("error")) {
                 return@registerCommand CommandsAPI.CommandResult("Failed to send friend request: $friendResp")
             }
-            CommandsAPI.CommandResult("Friend request sent to $username ($userId)!")
+            if (friendResp.contains("405") || friendResp.contains("method not allowed")) {
+                return@registerCommand CommandsAPI.CommandResult("Friend request endpoint does not allow POST requests (405 Method Not Allowed).\nRaw: $friendResp")
+            }
+            CommandsAPI.CommandResult("Friend request sent to $username!")
         }
 
         // A bit more advanced command with arguments
