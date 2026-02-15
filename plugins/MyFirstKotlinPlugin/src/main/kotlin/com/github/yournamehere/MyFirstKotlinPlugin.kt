@@ -70,6 +70,11 @@ class ModernFriendSystemPlugin : Plugin() {
                     "username",
                     "Username (e.g. user or user@unique)",
                 ),
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "token",
+                    "(Optional) Discord token to use for this request",
+                ),
             ),
         ) { ctx ->
             val prefs = settings
@@ -78,67 +83,47 @@ class ModernFriendSystemPlugin : Plugin() {
                 return@registerCommand CommandsAPI.CommandResult("Please provide a username.")
             }
 
-            // Get or prompt for token
-            // Try to extract token automatically using reflection (StoreAuth.token)
-            var token = prefs.getString("addfriend_token", null)
+            // Get token: prefer argument, then settings, then StoreStream
+            var token = ctx.getString("token")?.trim()
+            if (token.isNullOrEmpty()) {
+                token = prefs.getString("addfriend_token", null)
+            }
             if (token.isNullOrEmpty()) {
                 try {
-                    val storeAuthClass = Class.forName("com.discord.stores.StoreAuth")
-                    val instanceField = storeAuthClass.getDeclaredField("INSTANCE")
-                    instanceField.isAccessible = true
-                    val storeAuthInstance = instanceField.get(null)
-                    val tokenField = storeAuthClass.getDeclaredField("token")
-                    tokenField.isAccessible = true
-                    token = tokenField.get(storeAuthInstance) as? String
+                    val storeAuth = Class.forName("com.discord.stores.StoreStream")
+                        .getMethod("getAuthentication")
+                        .invoke(null)
+                    val field = storeAuth.javaClass.getDeclaredField("token")
+                    field.isAccessible = true
+                    token = field.get(storeAuth) as? String
                 } catch (e: Exception) {
                     token = null
                 }
             }
             if (token.isNullOrEmpty()) {
-                return@registerCommand CommandsAPI.CommandResult(
-                    "Could not extract Discord token automatically. Please use /set-addfriend-token <token> to set it manually."
-                )
+                return@registerCommand CommandsAPI.CommandResult("No token found. Use /set-addfriend-token or provide a token argument.")
             }
 
-            // Stealth headers
-            val headers = mapOf(
-                "Authorization" to "Bearer $token",
-                "User-Agent" to "Discord/2026.2.15 (Android; 12345)", // Update to real client UA
-                "X-Discord-Locale" to "en-US",
-                "X-Fingerprint" to "your_device_fingerprint_here", // Replace with real fingerprint
-                "Content-Type" to "application/json"
-            )
+            // Use Aliucord's Http utility for the request
+            val result = try {
+                val response = com.aliucord.Http.Request("https://discord.com/api/v9/users/@me/relationships", "POST")
+                    .setHeader("Authorization", token)
+                    .setHeader("Content-Type", "application/json")
+                    .executeWithBody("{\"username\":\"$username\"}")
 
-            fun httpRequest(url: String, payload: String?, method: String, headers: Map<String, String>): Pair<Int, String> {
-                try {
-                    val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                    conn.requestMethod = method
-                    for ((k, v) in headers) conn.setRequestProperty(k, v)
-                    conn.doInput = true
-                    if (payload != null) {
-                        conn.doOutput = true
-                        conn.outputStream.use { it.write(payload.toByteArray()) }
-                    }
-                    val code = conn.responseCode
-                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                    val resp = stream.bufferedReader().readText()
-                    return Pair(code, resp)
-                } catch (e: Exception) {
-                    return Pair(0, "error: ${e.message}")
+                val code = response.statusCode()
+                val body = response.text()
+
+                if (code in 200..299) {
+                    CommandsAPI.CommandResult("Friend request sent to $username!")
+                } else {
+                    CommandsAPI.CommandResult("Error $code: $body")
                 }
+            } catch (e: Exception) {
+                CommandsAPI.CommandResult("Request failed: ${e.message}")
             }
 
-            // Send friend request using new Discord username system
-            val friendUrl = "https://discord.com/api/v10/users/@me/relationships"
-            val friendPayload = "{\"username\":\"$username\"}"
-            val (friendCode, friendResp) = httpRequest(friendUrl, friendPayload, "POST", headers)
-            if (friendCode !in 200..299) {
-                return@registerCommand CommandsAPI.CommandResult("Failed to send friend request.\nHTTP $friendCode\nRaw: $friendResp")
-            }
-            if (friendResp.contains("You are being rate limited") || friendResp.contains("error")) {
-                return@registerCommand CommandsAPI.CommandResult("Failed to send friend request: $friendResp")
-            }
-            CommandsAPI.CommandResult("Friend request sent to $username!")
+            return@registerCommand result
         }
 
         // A bit more advanced command with arguments
