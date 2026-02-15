@@ -35,6 +35,65 @@ class MyFirstKotlinPlugin : Plugin() {
             )
         }
 
+        // /add-friend command for new Discord username system
+        commands.registerCommand(
+            "add-friend",
+            "Send a friend request by username (new Discord system)",
+            listOf(
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "username",
+                    "Username (e.g. user or user@unique)",
+                ),
+            ),
+        ) { ctx ->
+            val username = ctx.getString("username")?.trim()
+            if (username.isNullOrEmpty()) {
+                return@registerCommand CommandsAPI.CommandResult("Please provide a username.")
+            }
+
+            // Step 1: Resolve username to user ID using Discord API
+            // This endpoint is not public, but Discord client uses /users/search
+            val searchUrl = "https://discord.com/api/v9/users/search"
+            val headers = mutableMapOf<String, String>()
+            val token = com.aliucord.utils.DiskUtils.readToken() ?: ""
+            headers["Authorization"] = token
+            headers["User-Agent"] = "Discord-Android/200000" // Use a real Discord UA
+            headers["X-Discord-Locale"] = "en-US"
+            headers["X-Super-Properties"] = com.aliucord.utils.SuperProperties.get()
+            headers["Content-Type"] = "application/json"
+
+            val searchPayload = "{" + "\"username\":\"$username\"}" // {"username":"..."}
+            val searchResp = com.aliucord.utils.Http.simpleRequest(
+                searchUrl,
+                searchPayload,
+                headers,
+                "POST"
+            )
+            val userId = try {
+                val arr = org.json.JSONArray(searchResp)
+                if (arr.length() == 0) null else arr.getJSONObject(0).getString("id")
+            } catch (e: Exception) {
+                null
+            }
+            if (userId == null) {
+                return@registerCommand CommandsAPI.CommandResult("User not found or Discord search failed.")
+            }
+
+            // Step 2: Send friend request
+            val friendUrl = "https://discord.com/api/v9/users/@me/relationships/$userId"
+            val friendResp = com.aliucord.utils.Http.simpleRequest(
+                friendUrl,
+                "{}",
+                headers,
+                "PUT"
+            )
+            if (friendResp.contains("You are being rate limited") || friendResp.contains("error")) {
+                return@registerCommand CommandsAPI.CommandResult("Failed to send friend request: $friendResp")
+            }
+            CommandsAPI.CommandResult("Friend request sent to $username ($userId)!")
+        }
+
         // A bit more advanced command with arguments
         commands.registerCommand(
             "hellowitharguments",
