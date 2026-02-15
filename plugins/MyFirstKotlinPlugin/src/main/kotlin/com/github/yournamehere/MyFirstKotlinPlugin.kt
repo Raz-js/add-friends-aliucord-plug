@@ -23,25 +23,26 @@ import com.discord.widgets.chat.list.entries.MessageEntry
 )
 @Suppress("unused")
 class MyFirstKotlinPlugin : Plugin() {
-            // Command to set Discord token for /add-friend
-            commands.registerCommand(
-                "set-addfriend-token",
-                "Set Discord token for /add-friend command",
-                listOf(
-                    Utils.createCommandOption(
-                        ApplicationCommandType.STRING,
-                        "token",
-                        "Your Discord token",
-                    ),
+    override fun start(context: Context) {
+        // Command to set Discord token for /add-friend
+        commands.registerCommand(
+            "set-addfriend-token",
+            "Set Discord token for /add-friend command",
+            listOf(
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "token",
+                    "Your Discord token",
                 ),
-            ) { ctx ->
-                val token = ctx.getString("token")?.trim()
-                if (token.isNullOrEmpty()) {
-                    return@registerCommand CommandsAPI.CommandResult("Please provide a token.")
-                }
-                settings.setString("addfriend_token", token)
-                CommandsAPI.CommandResult("Token saved. You can now use /add-friend.")
+            ),
+        ) { ctx ->
+            val token = ctx.getString("token")?.trim()
+            if (token.isNullOrEmpty()) {
+                return@registerCommand CommandsAPI.CommandResult("Please provide a token.")
             }
+            settings.setString("addfriend_token", token)
+            CommandsAPI.CommandResult("Token saved. You can now use /add-friend.")
+        }
     override fun start(context: Context) {
         // Register a command with the name hello and description "My first command!" and no arguments.
         // Learn more: https://github.com/Aliucord/documentation/blob/main/plugin-dev/2_commands.md
