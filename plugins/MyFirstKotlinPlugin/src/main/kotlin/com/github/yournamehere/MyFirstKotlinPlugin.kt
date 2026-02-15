@@ -247,15 +247,14 @@ class ModernFriendSystemPlugin : Plugin() {
                             data["captcha_rqdata"] = obj.optString("captcha_rqdata")
                             data["captcha_rqtoken"] = obj.optString("captcha_rqtoken")
                             pendingCaptcha[username] = data
-                            // Open in-app captcha UI automatically
+                            // Open in-app captcha UI immediately
                             try {
                                 openCaptchaUI(context, username, data["captcha_sitekey"] ?: "")
-                                return@registerCommand CommandsAPI.CommandResult("Opened hCaptcha UI for $username. Solve it in the dialog to complete the request.")
                             } catch (_: Exception) {
-                                return@registerCommand CommandsAPI.CommandResult(
-                                    "Captcha required for $username. Sitekey: ${data["captcha_sitekey"]}. Solve the hCaptcha and run /addfriend-captcha <captcha-token> to complete."
-                                )
+                                // ignore
                             }
+                            val endpoint = "https://discord.com/api/v9/users/@me/relationships"
+                            return@registerCommand CommandsAPI.CommandResult("Request failed: $code: Bad Request ($endpoint)\n$body")
                         }
                     } catch (_: Exception) {
                     }
@@ -424,6 +423,45 @@ class ModernFriendSystemPlugin : Plugin() {
             }
 
             CommandsAPI.CommandResult("Opened hCaptcha UI for $key. Solve it in the dialog to auto-submit.")
+        }
+
+        // Command to parse raw captcha JSON and open the in-app UI
+        commands.registerCommand(
+            "addfriend-captcha-raw",
+            "Parse raw captcha JSON and open in-app hCaptcha UI",
+            listOf(
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "username",
+                    "Username for which captcha was requested",
+                ),
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "raw",
+                    "Raw captcha JSON (paste the JSON from the error)",
+                ),
+            ),
+        ) { ctx ->
+            val username = ctx.getString("username")?.trim()
+            val raw = ctx.getString("raw")?.trim()
+            if (username.isNullOrEmpty()) return@registerCommand CommandsAPI.CommandResult("Please provide the username as well.")
+            if (raw.isNullOrEmpty()) return@registerCommand CommandsAPI.CommandResult("Please provide the raw captcha JSON.")
+            try {
+                val obj = org.json.JSONObject(raw)
+                if (!obj.has("captcha_sitekey")) return@registerCommand CommandsAPI.CommandResult("Provided JSON doesn't contain captcha_sitekey.")
+                val data = mutableMapOf<String, String>()
+                data["captcha_sitekey"] = obj.optString("captcha_sitekey")
+                data["captcha_session_id"] = obj.optString("captcha_session_id")
+                data["captcha_rqdata"] = obj.optString("captcha_rqdata")
+                data["captcha_rqtoken"] = obj.optString("captcha_rqtoken")
+                pendingCaptcha[username] = data
+                try {
+                    openCaptchaUI(context, username, data["captcha_sitekey"] ?: "")
+                } catch (_: Exception) {}
+                return@registerCommand CommandsAPI.CommandResult("Opened hCaptcha UI for $username.")
+            } catch (e: Exception) {
+                return@registerCommand CommandsAPI.CommandResult("Failed to parse JSON: ${e.message}")
+            }
         }
 
         // A bit more advanced command with arguments
