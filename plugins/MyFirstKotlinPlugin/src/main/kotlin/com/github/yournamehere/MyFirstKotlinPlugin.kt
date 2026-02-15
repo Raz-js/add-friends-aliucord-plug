@@ -102,16 +102,14 @@ class ModernFriendSystemPlugin : Plugin() {
 
             // Stealth headers
             val headers = mapOf(
-                "Authorization" to token,
-                "User-Agent" to "Discord-Android/200000", // Real Discord Android UA
+                "Authorization" to "Bearer $token",
+                "User-Agent" to "Discord/2026.2.15 (Android; 12345)", // Update to real client UA
                 "X-Discord-Locale" to "en-US",
-                // X-Super-Properties is required for stealth, but must be copied from a real client
-                // You can sniff this from your device or use a static value from a real session
-                "X-Super-Properties" to "eyJv...snip...", // <-- Replace with a real value for best stealth
+                "X-Fingerprint" to "your_device_fingerprint_here", // Replace with real fingerprint
                 "Content-Type" to "application/json"
             )
 
-            fun httpRequest(url: String, payload: String?, method: String, headers: Map<String, String>): String {
+            fun httpRequest(url: String, payload: String?, method: String, headers: Map<String, String>): Pair<Int, String> {
                 try {
                     val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
                     conn.requestMethod = method
@@ -123,21 +121,22 @@ class ModernFriendSystemPlugin : Plugin() {
                     }
                     val code = conn.responseCode
                     val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                    return stream.bufferedReader().readText()
+                    val resp = stream.bufferedReader().readText()
+                    return Pair(code, resp)
                 } catch (e: Exception) {
-                    return "error: ${e.message}"
+                    return Pair(0, "error: ${e.message}")
                 }
             }
 
             // Send friend request using new Discord username system
-            val friendUrl = "https://discord.com/api/v9/users/@me/relationships"
+            val friendUrl = "https://discord.com/api/v10/users/@me/relationships"
             val friendPayload = "{\"username\":\"$username\"}"
-            val friendResp = httpRequest(friendUrl, friendPayload, "POST", headers)
+            val (friendCode, friendResp) = httpRequest(friendUrl, friendPayload, "POST", headers)
+            if (friendCode !in 200..299) {
+                return@registerCommand CommandsAPI.CommandResult("Failed to send friend request.\nHTTP $friendCode\nRaw: $friendResp")
+            }
             if (friendResp.contains("You are being rate limited") || friendResp.contains("error")) {
                 return@registerCommand CommandsAPI.CommandResult("Failed to send friend request: $friendResp")
-            }
-            if (friendResp.contains("405") || friendResp.contains("method not allowed")) {
-                return@registerCommand CommandsAPI.CommandResult("Friend request endpoint does not allow POST requests (405 Method Not Allowed).\nRaw: $friendResp")
             }
             CommandsAPI.CommandResult("Friend request sent to $username!")
         }
