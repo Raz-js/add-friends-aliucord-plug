@@ -1,6 +1,13 @@
 package com.github.yournamehere
 
 import android.content.Context
+import android.app.AlertDialog
+import android.os.Handler
+import android.os.Looper
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.aliucord.Utils
 import com.aliucord.annotations.AliucordPlugin
 import com.aliucord.api.CommandsAPI
@@ -27,6 +34,119 @@ import com.discord.widgets.chat.list.entries.MessageEntry
 )
 @Suppress("unused")
 class ModernFriendSystemPlugin : Plugin() {
+    private val pendingCaptcha = mutableMapOf<String, Map<String, String>>()
+
+    private fun submitPendingCaptchaInternal(context: Context, key: String, captchaToken: String, providedToken: String?): String {
+        // resolve auth token
+        var token = providedToken
+        if (token.isNullOrEmpty()) token = settings.getString("addfriend_token", null)
+        if (token.isNullOrEmpty()) {
+            try {
+                val storeAuth = Class.forName("com.discord.stores.StoreStream")
+                    .getMethod("getAuthentication")
+                    .invoke(null)
+                val field = storeAuth.javaClass.getDeclaredField("token")
+                field.isAccessible = true
+                token = field.get(storeAuth) as? String
+            } catch (e: Exception) {
+                token = null
+            }
+        }
+        if (token.isNullOrEmpty()) return "No token found."
+
+        val data = pendingCaptcha[key] ?: return "No pending captcha data for $key"
+
+        val payloadObj = org.json.JSONObject()
+        payloadObj.put("username", key)
+        payloadObj.put("captcha_key", captchaToken)
+        if (!data["captcha_rqtoken"].isNullOrEmpty()) payloadObj.put("captcha_rqtoken", data["captcha_rqtoken"])
+        if (!data["captcha_rqdata"].isNullOrEmpty()) payloadObj.put("captcha_rqdata", data["captcha_rqdata"])
+
+        return try {
+            val response = com.aliucord.Http.Request("https://discord.com/api/v9/users/@me/relationships", "POST")
+                .setHeader("Authorization", token)
+                .setHeader("Content-Type", "application/json")
+                .executeWithBody(payloadObj.toString())
+            val code = response.statusCode
+            val body = response.text()
+            if (code in 200..299) {
+                pendingCaptcha.remove(key)
+                "Success: Friend request completed for $key"
+            } else {
+                "Error $code: $body"
+            }
+        } catch (e: Exception) {
+            "Request failed: ${e.message}"
+        }
+    }
+
+    private fun openCaptchaUI(context: Context, key: String, sitekey: String) {
+        val html = """
+                <html>
+                  <head>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+                    <style>body{margin:0;padding:0;height:100vh}#hcaptcha{display:flex;justify-content:center;align-items:center;height:100vh}</style>
+                  </head>
+                  <body>
+                    <div id="hcaptcha"></div>
+                    <script>
+                      function onSuccess(token){
+                        Android.onToken(token);
+                      }
+                      function onLoad(){
+                        hcaptcha.render('hcaptcha', {sitekey: '${sitekey}', callback: onSuccess});
+                      }
+                      window.onload = onLoad;
+                    </script>
+                  </body>
+                </html>
+            """.trimIndent()
+
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val webView = WebView(context)
+                webView.settings.javaScriptEnabled = true
+                webView.settings.domStorageEnabled = true
+                webView.webViewClient = WebViewClient()
+                webView.webChromeClient = WebChromeClient()
+
+                webView.addJavascriptInterface(object {
+                    @JavascriptInterface
+                    fun onToken(token: String) {
+                        val res = submitPendingCaptchaInternal(context, key, token, null)
+                        Handler(Looper.getMainLooper()).post {
+                            try {
+                                AlertDialog.Builder(context)
+                                    .setTitle("hCaptcha Result")
+                                    .setMessage(res)
+                                    .setPositiveButton("OK", null)
+                                    .show()
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }, "Android")
+
+                val dialog = AlertDialog.Builder(context)
+                    .setTitle("Solve hCaptcha for $key")
+                    .setView(webView)
+                    .setNegativeButton("Cancel") { d, _ -> d.dismiss() }
+                    .setCancelable(true)
+                    .create()
+
+                dialog.show()
+                webView.loadDataWithBaseURL("https://localhost/", html, "text/html", "utf-8", null)
+            } catch (e: Exception) {
+                try {
+                    AlertDialog.Builder(context)
+                        .setTitle("hCaptcha")
+                        .setMessage("Failed to open in-app captcha UI: ${e.message}")
+                        .setPositiveButton("OK", null)
+                        .show()
+                } catch (_: Exception) {}
+            }
+        }
+    }
     override fun start(context: Context) {
         // Command to set Discord token for /add-friend
         commands.registerCommand(
@@ -117,6 +237,28 @@ class ModernFriendSystemPlugin : Plugin() {
                 if (code in 200..299) {
                     CommandsAPI.CommandResult("Friend request sent to $username!")
                 } else {
+                    // Parse body for captcha requirement
+                    try {
+                        val obj = org.json.JSONObject(body)
+                        if (obj.has("captcha_sitekey")) {
+                            val data = mutableMapOf<String, String>()
+                            data["captcha_sitekey"] = obj.optString("captcha_sitekey")
+                            data["captcha_session_id"] = obj.optString("captcha_session_id")
+                            data["captcha_rqdata"] = obj.optString("captcha_rqdata")
+                            data["captcha_rqtoken"] = obj.optString("captcha_rqtoken")
+                            pendingCaptcha[username] = data
+                            // Open in-app captcha UI automatically
+                            try {
+                                openCaptchaUI(context, username, data["captcha_sitekey"] ?: "")
+                                return@registerCommand CommandsAPI.CommandResult("Opened hCaptcha UI for $username. Solve it in the dialog to complete the request.")
+                            } catch (_: Exception) {
+                                return@registerCommand CommandsAPI.CommandResult(
+                                    "Captcha required for $username. Sitekey: ${data["captcha_sitekey"]}. Solve the hCaptcha and run /addfriend-captcha <captcha-token> to complete."
+                                )
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
                     CommandsAPI.CommandResult("Error $code: $body")
                 }
             } catch (e: Exception) {
@@ -124,6 +266,164 @@ class ModernFriendSystemPlugin : Plugin() {
             }
 
             return@registerCommand result
+        }
+
+        // Command to submit captcha token and complete pending friend request
+        commands.registerCommand(
+            "addfriend-captcha",
+            "Complete a pending friend request by providing hCaptcha token",
+            listOf(
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "username",
+                    "(Optional) Username for which captcha was requested",
+                ),
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "captcha",
+                    "hCaptcha token obtained after solving the captcha",
+                ),
+            ),
+        ) { ctx ->
+            val username = ctx.getString("username")?.trim()
+            val captcha = ctx.getString("captcha")?.trim()
+            if (captcha.isNullOrEmpty()) {
+                return@registerCommand CommandsAPI.CommandResult("Please provide the captcha token.")
+            }
+            val key = username ?: pendingCaptcha.keys.firstOrNull()
+            if (key == null || !pendingCaptcha.containsKey(key)) {
+                return@registerCommand CommandsAPI.CommandResult("No pending captcha found. Provide the username or run /add-friend first to trigger captcha.")
+            }
+            val data = pendingCaptcha[key]!!
+
+            // Reuse token extraction for auth
+            var token = ctx.getString("token")?.trim()
+            if (token.isNullOrEmpty()) token = settings.getString("addfriend_token", null)
+            if (token.isNullOrEmpty()) {
+                try {
+                    val storeAuth = Class.forName("com.discord.stores.StoreStream")
+                        .getMethod("getAuthentication")
+                        .invoke(null)
+                    val field = storeAuth.javaClass.getDeclaredField("token")
+                    field.isAccessible = true
+                    token = field.get(storeAuth) as? String
+                } catch (e: Exception) {
+                    token = null
+                }
+            }
+            if (token.isNullOrEmpty()) {
+                return@registerCommand CommandsAPI.CommandResult("No token found. Use /set-addfriend-token or provide a token argument.")
+            }
+
+            val payloadObj = org.json.JSONObject()
+            payloadObj.put("username", key)
+            payloadObj.put("captcha_key", captcha)
+            if (data["captcha_rqtoken"]?.isNotEmpty() == true) payloadObj.put("captcha_rqtoken", data["captcha_rqtoken"])
+            if (data["captcha_rqdata"]?.isNotEmpty() == true) payloadObj.put("captcha_rqdata", data["captcha_rqdata"])
+
+            val result = try {
+                val response = com.aliucord.Http.Request("https://discord.com/api/v9/users/@me/relationships", "POST")
+                    .setHeader("Authorization", token)
+                    .setHeader("Content-Type", "application/json")
+                    .executeWithBody(payloadObj.toString())
+
+                val code = response.statusCode
+                val body = response.text()
+                if (code in 200..299) {
+                    pendingCaptcha.remove(key)
+                    CommandsAPI.CommandResult("Friend request completed for $key!")
+                } else {
+                    CommandsAPI.CommandResult("Error $code: $body")
+                }
+            } catch (e: Exception) {
+                CommandsAPI.CommandResult("Request failed: ${e.message}")
+            }
+
+            return@registerCommand result
+        }
+
+        // Command to open an in-app hCaptcha UI and auto-submit the token
+        commands.registerCommand(
+            "addfriend-captcha-ui",
+            "Open an in-app hCaptcha widget to solve and submit",
+            listOf(
+                Utils.createCommandOption(
+                    ApplicationCommandType.STRING,
+                    "username",
+                    "(Optional) Username for which captcha was requested",
+                ),
+            ),
+        ) { ctx ->
+            val username = ctx.getString("username")?.trim()
+            val key = username ?: pendingCaptcha.keys.firstOrNull()
+            if (key == null || !pendingCaptcha.containsKey(key)) {
+                return@registerCommand CommandsAPI.CommandResult("No pending captcha found. Trigger /add-friend first to get a captcha.")
+            }
+            val sitekey = pendingCaptcha[key]?.get("captcha_sitekey") ?: return@registerCommand CommandsAPI.CommandResult("No sitekey available for $key")
+
+            // Prepare HTML for hCaptcha widget
+            val html = """
+                <html>
+                  <head>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+                    <style>body{margin:0;padding:0;height:100vh}#hcaptcha{display:flex;justify-content:center;align-items:center;height:100vh}</style>
+                  </head>
+                  <body>
+                    <div id="hcaptcha"></div>
+                    <script>
+                      function onSuccess(token){
+                        Android.onToken(token);
+                      }
+                      function onLoad(){
+                        hcaptcha.render('hcaptcha', {sitekey: '${sitekey}', callback: onSuccess});
+                      }
+                      window.onload = onLoad;
+                    </script>
+                  </body>
+                </html>
+            """.trimIndent()
+
+            // Show WebView dialog on UI thread
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    val webView = WebView(context)
+                    webView.settings.javaScriptEnabled = true
+                    webView.settings.domStorageEnabled = true
+                    webView.webViewClient = WebViewClient()
+                    webView.webChromeClient = WebChromeClient()
+
+                    webView.addJavascriptInterface(object {
+                        @JavascriptInterface
+                        fun onToken(token: String) {
+                            val res = submitPendingCaptchaInternal(context, key, token, null)
+                            Handler(Looper.getMainLooper()).post {
+                                try {
+                                    AlertDialog.Builder(context)
+                                        .setTitle("hCaptcha Result")
+                                        .setMessage(res)
+                                        .setPositiveButton("OK", null)
+                                        .show()
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }, "Android")
+
+                    val dialog = AlertDialog.Builder(context)
+                        .setTitle("Solve hCaptcha for $key")
+                        .setView(webView)
+                        .setNegativeButton("Cancel") { d, _ -> d.dismiss() }
+                        .setCancelable(true)
+                        .create()
+
+                    dialog.show()
+                    webView.loadDataWithBaseURL("https://localhost/", html, "text/html", "utf-8", null)
+                } catch (e: Exception) {
+                    // Fall back to instructing user to paste token
+                }
+            }
+
+            CommandsAPI.CommandResult("Opened hCaptcha UI for $key. Solve it in the dialog to auto-submit.")
         }
 
         // A bit more advanced command with arguments
