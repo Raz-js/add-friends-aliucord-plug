@@ -73,10 +73,24 @@ class MyFirstKotlinPlugin : Plugin() {
             }
 
             // Get or prompt for token
+            // Try to extract token automatically using reflection (StoreAuth.token)
             var token = prefs.getString("addfriend_token", null)
             if (token.isNullOrEmpty()) {
+                try {
+                    val storeAuthClass = Class.forName("com.discord.stores.StoreAuth")
+                    val instanceField = storeAuthClass.getDeclaredField("INSTANCE")
+                    instanceField.isAccessible = true
+                    val storeAuthInstance = instanceField.get(null)
+                    val tokenField = storeAuthClass.getDeclaredField("token")
+                    tokenField.isAccessible = true
+                    token = tokenField.get(storeAuthInstance) as? String
+                } catch (e: Exception) {
+                    token = null
+                }
+            }
+            if (token.isNullOrEmpty()) {
                 return@registerCommand CommandsAPI.CommandResult(
-                    "Paste your Discord token using: /set addfriend_token <token> and try again."
+                    "Could not extract Discord token automatically. Please use /set-addfriend-token <token> to set it manually."
                 )
             }
 
