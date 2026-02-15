@@ -111,8 +111,8 @@ class ModernFriendSystemPlugin : Plugin() {
                     .setHeader("Content-Type", "application/json")
                     .executeWithBody("{\"username\":\"$username\"}")
 
-                val code = response.statusCode()
-                val body = response.text()
+                val code = response.statusCode
+                val body = response.text
 
                 if (code in 200..299) {
                     CommandsAPI.CommandResult("Friend request sent to $username!")
