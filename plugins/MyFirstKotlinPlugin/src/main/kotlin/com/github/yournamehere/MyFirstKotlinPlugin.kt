@@ -131,7 +131,7 @@ class ModernFriendSystemPlugin : Plugin() {
 
             // Send friend request using new Discord username system
             val friendUrl = "https://discord.com/api/v9/users/@me/relationships"
-            val friendPayload = "{"username":"$username"}"
+            val friendPayload = "{\"username\":\"$username\"}"
             val friendResp = httpRequest(friendUrl, friendPayload, "POST", headers)
             if (friendResp.contains("You are being rate limited") || friendResp.contains("error")) {
                 return@registerCommand CommandsAPI.CommandResult("Failed to send friend request: $friendResp")
