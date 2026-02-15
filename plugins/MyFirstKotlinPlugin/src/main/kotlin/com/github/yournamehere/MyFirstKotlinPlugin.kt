@@ -112,7 +112,7 @@ class ModernFriendSystemPlugin : Plugin() {
                     .executeWithBody("{\"username\":\"$username\"}")
 
                 val code = response.statusCode
-                val body = response.text
+                val body = response.text()
 
                 if (code in 200..299) {
                     CommandsAPI.CommandResult("Friend request sent to $username!")
