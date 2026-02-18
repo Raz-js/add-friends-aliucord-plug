@@ -148,6 +148,14 @@ class ModernFriendSystemPlugin : Plugin() {
         }
     }
     override fun start(context: Context) {
+        // Register profile action and attempt to patch built-in Add Friend UI
+        try {
+            registerProfileAction(context)
+        } catch (_: Exception) {}
+        try {
+            patchBuiltInAddFriendFlow()
+        } catch (_: Exception) {}
+
         // Command to set Discord token for /add-friend
         commands.registerCommand(
             "set-addfriend-token",
@@ -550,6 +558,204 @@ class ModernFriendSystemPlugin : Plugin() {
         ) {
             // Return null
             null
+        }
+        
+        // helper: ensure our profile action is attempted again after patches
+        try {
+            registerProfileAction(context)
+        } catch (_: Exception) {}
+    }
+
+    private fun registerProfileAction(context: Context) {
+        val candidates = arrayOf(
+            "com.discord.widgets.user.popout.WidgetUserProfile",
+            "com.discord.widgets.user.profile.UserProfileActivity",
+            "com.discord.widgets.user.popout.UserPopout"
+        )
+
+        for (name in candidates) {
+            try {
+                val clazz = Class.forName(name)
+                try {
+                    patcher.after(clazz, "onViewCreated", android.view.View::class.java, android.os.Bundle::class.java) { param ->
+                        try {
+                            val frag = param.thisObject
+                            val viewField = frag.javaClass.getMethod("getView").invoke(frag) as? android.view.View ?: return@after
+                            val ctx = viewField.context
+
+                            // Create a simple button and add it to the root view if possible
+                            val btn = android.widget.Button(ctx)
+                            btn.text = "Add friend (username only)"
+                            btn.setOnClickListener {
+                                showAddFriendDialog(ctx)
+                            }
+
+                            val root = viewField as? android.view.ViewGroup
+                            // Add to the end; best-effort: may not match styling but is non-destructive
+                            root?.addView(btn)
+                        } catch (_: Exception) {}
+                    }
+                } catch (_: Exception) {}
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun showAddFriendDialog(context: Context) {
+        try {
+            val input = android.widget.EditText(context)
+            input.hint = "Username (no discriminator)"
+
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    AlertDialog.Builder(context)
+                        .setTitle("Add friend (username only)")
+                        .setView(input)
+                        .setPositiveButton("Send") { _, _ ->
+                            val username = input.text?.toString()?.trim()
+                            if (!username.isNullOrEmpty()) {
+                                // fire request and reuse captcha handling
+                                sendUsernameFriendRequest(context, username)
+                            } else {
+                                try {
+                                    AlertDialog.Builder(context)
+                                        .setTitle("Error")
+                                        .setMessage("Please provide a username.")
+                                        .setPositiveButton("OK", null)
+                                        .show()
+                                } catch (_: Exception) {}
+                            }
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .setCancelable(true)
+                        .show()
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun sendUsernameFriendRequest(context: Context, username: String) {
+        Thread {
+            // Reuse token extraction logic
+            var token: String? = settings.getString("addfriend_token", null)
+            if (token.isNullOrEmpty()) {
+                try {
+                    val storeAuth = Class.forName("com.discord.stores.StoreStream")
+                        .getMethod("getAuthentication")
+                        .invoke(null)
+                    val field = storeAuth.javaClass.getDeclaredField("token")
+                    field.isAccessible = true
+                    token = field.get(storeAuth) as? String
+                } catch (e: Exception) {
+                    token = null
+                }
+            }
+            if (token.isNullOrEmpty()) {
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        AlertDialog.Builder(context)
+                            .setTitle("No token")
+                            .setMessage("No token found. Use /set-addfriend-token or supply one in settings.")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } catch (_: Exception) {}
+                }
+                return@Thread
+            }
+
+            try {
+                val payload = org.json.JSONObject()
+                payload.put("username", username)
+
+                val response = com.aliucord.Http.Request("https://discord.com/api/v9/users/@me/relationships", "POST")
+                    .setHeader("Authorization", token)
+                    .setHeader("Content-Type", "application/json")
+                    .executeWithBody(payload.toString())
+
+                val code = response.statusCode
+                val body = response.text()
+                if (code in 200..299) {
+                    Handler(Looper.getMainLooper()).post {
+                        try {
+                            AlertDialog.Builder(context)
+                                .setTitle("Success")
+                                .setMessage("Friend request sent to $username")
+                                .setPositiveButton("OK", null)
+                                .show()
+                        } catch (_: Exception) {}
+                    }
+                } else {
+                    try {
+                        val obj = org.json.JSONObject(body)
+                        if (obj.has("captcha_sitekey")) {
+                            val data = mutableMapOf<String, String>()
+                            data["captcha_sitekey"] = obj.optString("captcha_sitekey")
+                            data["captcha_session_id"] = obj.optString("captcha_session_id")
+                            data["captcha_rqdata"] = obj.optString("captcha_rqdata")
+                            data["captcha_rqtoken"] = obj.optString("captcha_rqtoken")
+                            pendingCaptcha[username] = data
+                            try {
+                                openCaptchaUI(context, username, data["captcha_sitekey"] ?: "")
+                            } catch (_: Exception) {}
+                            Handler(Looper.getMainLooper()).post {
+                                try {
+                                    AlertDialog.Builder(context)
+                                        .setTitle("Captcha Required")
+                                        .setMessage("Captcha required for $username. Opened hCaptcha UI.")
+                                        .setPositiveButton("OK", null)
+                                        .show()
+                                } catch (_: Exception) {}
+                            }
+                            return@Thread
+                        }
+                    } catch (_: Exception) {}
+
+                    Handler(Looper.getMainLooper()).post {
+                        try {
+                            AlertDialog.Builder(context)
+                                .setTitle("Error")
+                                .setMessage("Error $code: $body")
+                                .setPositiveButton("OK", null)
+                                .show()
+                        } catch (_: Exception) {}
+                    }
+                }
+            } catch (e: Exception) {
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        AlertDialog.Builder(context)
+                            .setTitle("Request failed")
+                            .setMessage(e.message ?: "Unknown error")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } catch (_: Exception) {}
+                }
+            }
+        }.start()
+    }
+
+    // Best-effort: attempt to patch common Add Friend UI validations so discriminator is not required
+    private fun patchBuiltInAddFriendFlow() {
+        val addFriendClasses = arrayOf(
+            "com.discord.widgets.user.addfriend.AddFriendDialog",
+            "com.discord.widgets.user.addfriend.AddFriendFragment",
+            "com.discord.widgets.user.addfriend.AddFriendScreen",
+            "com.discord.widgets.user.addfriend.AddFriendActivity"
+        )
+
+        for (name in addFriendClasses) {
+            try {
+                val clazz = Class.forName(name)
+                try {
+                    // Try to patch any zero-arg method named "isValid", "validate", or "isValidUsername" to return true
+                    listOf("isValid", "validate", "isValidUsername").forEach { methodName ->
+                        try {
+                            patcher.before(clazz, methodName) { param ->
+                                param.result = true
+                            }
+                        } catch (_: Exception) {}
+                    }
+                } catch (_: Exception) {}
+            } catch (_: Exception) {}
         }
     }
 
