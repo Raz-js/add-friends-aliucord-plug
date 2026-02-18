@@ -567,37 +567,44 @@ class ModernFriendSystemPlugin : Plugin() {
     }
 
     private fun registerProfileAction(context: Context) {
-        val candidates = arrayOf(
+        val candidates = setOf(
             "com.discord.widgets.user.popout.WidgetUserProfile",
             "com.discord.widgets.user.profile.UserProfileActivity",
-            "com.discord.widgets.user.popout.UserPopout"
+            "com.discord.widgets.user.popout.UserPopout",
+            "com.discord.activities.UserProfileActivity",
+            "com.discord.widgets.user.profile.UserProfileFragment"
         )
 
-        for (name in candidates) {
-            try {
-                val clazz = Class.forName(name)
-                try {
-                    patcher.after(clazz, "onViewCreated", android.view.View::class.java, android.os.Bundle::class.java) { param ->
-                        try {
-                            val frag = param.thisObject
-                            val viewField = frag.javaClass.getMethod("getView").invoke(frag) as? android.view.View ?: return@after
-                            val ctx = viewField.context
+        try {
+            val app = context.applicationContext as? android.app.Application ?: return
+            app.registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+                override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {
+                    try {
+                        if (!candidates.contains(activity.javaClass.name)) return
+                        val root = activity.findViewById<android.view.ViewGroup>(android.R.id.content) ?: return
+                        // Avoid adding multiple times
+                        val tag = "af_username_only_button"
+                        if (root.findViewWithTag<android.view.View>(tag) != null) return
 
-                            // Create a simple button and add it to the root view if possible
-                            val btn = android.widget.Button(ctx)
-                            btn.text = "Add friend (username only)"
-                            btn.setOnClickListener {
-                                showAddFriendDialog(ctx)
-                            }
+                        val ctx = activity
+                        val btn = android.widget.Button(ctx)
+                        btn.tag = tag
+                        btn.text = "Add friend (username only)"
+                        btn.setOnClickListener { showAddFriendDialog(ctx) }
 
-                            val root = viewField as? android.view.ViewGroup
-                            // Add to the end; best-effort: may not match styling but is non-destructive
-                            root?.addView(btn)
-                        } catch (_: Exception) {}
-                    }
-                } catch (_: Exception) {}
-            } catch (_: Exception) {}
-        }
+                        // Add to root; best-effort placement
+                        root.addView(btn)
+                    } catch (_: Exception) {}
+                }
+
+                override fun onActivityStarted(activity: android.app.Activity) {}
+                override fun onActivityResumed(activity: android.app.Activity) {}
+                override fun onActivityPaused(activity: android.app.Activity) {}
+                override fun onActivityStopped(activity: android.app.Activity) {}
+                override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+                override fun onActivityDestroyed(activity: android.app.Activity) {}
+            })
+        } catch (_: Exception) {}
     }
 
     private fun showAddFriendDialog(context: Context) {
@@ -735,28 +742,9 @@ class ModernFriendSystemPlugin : Plugin() {
 
     // Best-effort: attempt to patch common Add Friend UI validations so discriminator is not required
     private fun patchBuiltInAddFriendFlow() {
-        val addFriendClasses = arrayOf(
-            "com.discord.widgets.user.addfriend.AddFriendDialog",
-            "com.discord.widgets.user.addfriend.AddFriendFragment",
-            "com.discord.widgets.user.addfriend.AddFriendScreen",
-            "com.discord.widgets.user.addfriend.AddFriendActivity"
-        )
-
-        for (name in addFriendClasses) {
-            try {
-                val clazz = Class.forName(name)
-                try {
-                    // Try to patch any zero-arg method named "isValid", "validate", or "isValidUsername" to return true
-                    listOf("isValid", "validate", "isValidUsername").forEach { methodName ->
-                        try {
-                            patcher.before(clazz, methodName) { param ->
-                                param.result = true
-                            }
-                        } catch (_: Exception) {}
-                    }
-                } catch (_: Exception) {}
-            } catch (_: Exception) {}
-        }
+        // Best-effort patching is unreliable across Aliucord/Discord versions.
+        // Keep this as a no-op placeholder to avoid compile-time issues.
+    }
     }
 
     override fun stop(context: Context) {
