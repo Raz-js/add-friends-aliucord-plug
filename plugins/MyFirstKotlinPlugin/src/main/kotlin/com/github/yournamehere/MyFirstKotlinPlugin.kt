@@ -745,7 +745,6 @@ class ModernFriendSystemPlugin : Plugin() {
         // Best-effort patching is unreliable across Aliucord/Discord versions.
         // Keep this as a no-op placeholder to avoid compile-time issues.
     }
-    }
 
     override fun stop(context: Context) {
         // Remove all patches
